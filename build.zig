@@ -26,15 +26,12 @@ pub fn build(b: *std.Build) !void {
         .ofmt = .spirv
     });
 
-    const fragment_shader = b.addObject(.{
-        .name = "fragment_shader",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("shaders/frag.zig"),
-            .target = vulkan12_target,
-            .optimize = .ReleaseFast,
-        }),
-        .use_llvm = false,
-        .use_lld = false
+    const shader_compile = b.addSystemCommand(&.{
+        "glslc",
+        "-fshader-stage=frag",
+        "shaders/frag.glsl",
+        "-o",
+        "shaders/frag.spv"
     });
 
     const vertex_shader = b.addObject(.{
@@ -163,13 +160,15 @@ pub fn build(b: *std.Build) !void {
         glfw_c.root_module.linkFramework("QuartzCore", .{});
     }
 
+    exe.step.dependOn(&shader_compile.step);
+
     exe.root_module.linkLibrary(glfw_c);
     exe.root_module.addIncludePath(b.path("deps/glfw/include"));
 
     exe.root_module.addImport("vulkan", vulkan);
 
     exe.root_module.addAnonymousImport("fragment", .{
-        .root_source_file = fragment_shader.getEmittedBin()
+        .root_source_file = b.path("shaders/frag.spv")
     });
 
     exe.root_module.addAnonymousImport("vertex", .{

@@ -16,6 +16,8 @@ pub const c = @cImport({
     @cInclude("GLFW/glfw3native.h");
 });
 
+const Format = vk.Format;
+
 const Instance = @import("Instance.zig").Instance;
 const Swapchain = @import("Swapchain.zig").Swapchain;
 const SwapchainInfo = @import("Swapchain.zig").SwapchainInfo;
@@ -36,6 +38,9 @@ const NativeCommandVTable = @import("CommandList.zig").NativeCommandVTable;
 const ShaderResource = @import("ShaderResource.zig").ShaderResource;
 const ShaderResourceLayout = @import("ShaderResource.zig").ShaderResourceLayout;
 const ResourceLayoutItem = @import("ShaderResource.zig").ResourceLayoutItem;
+const Texture2D = @import("Texture2D.zig").Texture2D;
+const Sampler = @import("Texture2D.zig").Sampler;
+const SamplerInfo = @import("Texture2D.zig").SamplerInfo;
 
 pub const DeviceError = error {
     NoValidGPUs,
@@ -1025,6 +1030,136 @@ pub const Device = struct {
         return buffer;
     }
 
+    pub fn createTexture2DFromData(self: *Device, width: u32, height: u32, data: []const u8) !Texture2D {
+        const image_info = vk.ImageCreateInfo{
+            .image_type = .@"2d",
+            .format = .r8g8b8a8_unorm,
+            .extent = .{
+                .width = width,
+                .height = height,
+                .depth = 1,
+            },
+            .mip_levels = 1,
+            .array_layers = 1,
+            .samples = .{ .@"1_bit" = true },
+            .tiling = .optimal,
+            .usage = .{ .sampled_bit = true, .transfer_dst_bit = true },
+            .sharing_mode = .exclusive,
+            .initial_layout = .undefined
+        };
+
+        const image = try self.device.createImage(&image_info, self.instance.vk_allocator);
+
+        const mem_requirements = self.device.getImageMemoryRequirements(image);
+
+        const alloc_info = vk.MemoryAllocateInfo{
+            .allocation_size = mem_requirements.size,
+            .memory_type_index = try findMemoryType(self.instance.instance, self.physical_device, mem_requirements.memory_type_bits, .{ .device_local_bit = true}),
+        };
+
+        const memory = try self.device.allocateMemory(&alloc_info, self.instance.vk_allocator);
+        
+        try self.device.bindImageMemory(image, memory, 0);
+
+        var staging_buffer: vk.Buffer = undefined;
+        var staging_memory: vk.DeviceMemory = undefined;
+        try createBufferInternal(
+            self.instance.instance,
+            self.physical_device,
+            self.device,
+            self.instance.vk_allocator,
+            @intCast(width * height * 4),
+            .{ .transfer_src_bit = true },
+            .{ .host_visible_bit = true, .host_coherent_bit = true },
+            &staging_buffer,
+            &staging_memory
+        );
+
+        const staging_data: []u8 = @as([*]u8, @ptrCast(try self.device.mapMemory(staging_memory, 0, @intCast(width * height * 4), .{})))[0..width * height * 4];
+        @memcpy(staging_data, data);
+
+        self.device.unmapMemory(staging_memory);
+
+        var command_list = self.beginSingleTimeCommands();
+
+        try transitionImageLayout(self, &command_list, image, .undefined, .transfer_dst_optimal);
+        try copyBufferToImage(self, &command_list, staging_buffer, image, width, height);
+        try transitionImageLayout(self, &command_list, image, .transfer_dst_optimal, .shader_read_only_optimal);
+
+        try self.endSingleTimeCommands(&command_list);
+
+        self.device.destroyBuffer(staging_buffer, self.instance.vk_allocator);
+        self.device.freeMemory(staging_memory, self.instance.vk_allocator);
+
+        const view_info = vk.ImageViewCreateInfo{
+            .image = image,
+            .view_type = .@"2d",
+            .format = .r8g8b8a8_unorm,
+            .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1
+            },
+            .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity }
+        };
+
+        const view = try self.device.createImageView(&view_info, self.instance.vk_allocator);
+
+        return Texture2D{
+            .device = self,
+            .image = image,
+            .memory = memory,
+            .image_view = view,
+            .width = width,
+            .height = height
+        };
+    }
+
+    pub fn createSampler(self: *Device, sampler_info: *const SamplerInfo) !Sampler {
+        const sampler_create_info = vk.SamplerCreateInfo{
+            .mag_filter = sampler_info.mag_filter,
+            .min_filter = sampler_info.min_filter,
+            .mipmap_mode = sampler_info.mipmap_mode,
+            .address_mode_u = sampler_info.address_mode_u,
+            .address_mode_v = sampler_info.address_mode_v,
+            .address_mode_w = sampler_info.address_mode_w,
+            .mip_lod_bias = sampler_info.mip_lod_bias,
+            .anisotropy_enable = if (sampler_info.enable_anisotrophy) .true else .false,
+            .max_anisotropy = sampler_info.max_anisotrophy,
+            .compare_enable = if (sampler_info.compare_enable) .true else .false,
+            .compare_op = .less_or_equal,
+            .min_lod = sampler_info.min_lod,
+            .max_lod = sampler_info.max_lod,
+            .border_color = sampler_info.border_color,
+            .unnormalized_coordinates = .false
+        };
+
+        return Sampler{
+            .device = self,
+            .sampler = try self.device.createSampler(&sampler_create_info, self.instance.vk_allocator)
+        };
+    }
+
+    pub fn destroySampler(self: *const Device, sampler: *const Sampler) void {
+        self.device.deviceWaitIdle() catch {
+            return;
+        };
+
+        self.device.destroySampler(sampler.sampler, self.instance.vk_allocator);
+    }
+
+    pub fn destroyTexture2D(self: *const Device, texture: *const Texture2D) void {
+        self.device.deviceWaitIdle() catch {
+            return;
+        };
+
+        self.device.destroyImageView(texture.image_view, self.instance.vk_allocator);
+        self.device.destroyImage(texture.image, self.instance.vk_allocator);
+        self.device.freeMemory(texture.memory, self.instance.vk_allocator);
+    }
+
     pub fn destroyBuffer(self: *const Device, buffer: *const Buffer) void {
         self.device.deviceWaitIdle() catch {
             return;
@@ -1144,6 +1279,16 @@ pub const Device = struct {
         .destroy = VulkanCopyBufferNativeCommand.destroy,
     };
 
+    const vulkan_copy_buffer_to_image_native_command_vtable = NativeCommandVTable{
+        .record = VulkanCopyBufferToImageNativeCommand.record,
+        .destroy = VulkanCopyBufferToImageNativeCommand.destroy,
+    };
+
+    const vulkan_image_pipeline_barrier_native_command_vtable = NativeCommandVTable{
+        .record = VulkanImagePipelineBarrierNativeCommand.record,
+        .destroy = VulkanImagePipelineBarrierNativeCommand.destroy,
+    };
+
     const VulkanCopyBufferNativeCommand = struct {
         src: vk.Buffer,
         dst: vk.Buffer,
@@ -1191,6 +1336,138 @@ pub const Device = struct {
         }
     };
 
+    const VulkanCopyBufferToImageNativeCommand = struct {
+        buffer: vk.Buffer,
+        image: vk.Image,
+        width: u32,
+        height: u32,
+
+        pub fn create(allocator: *std.mem.Allocator, buffer: vk.Buffer, image: vk.Image, width: u32, height: u32) !NativeCommand {
+            const cmd_size = @sizeOf(VulkanCopyBufferToImageNativeCommand);
+            const raw = try allocator.alloc(u8, cmd_size);
+
+            const ptr = @as(*VulkanCopyBufferToImageNativeCommand, @ptrCast(@alignCast(raw.ptr)));
+            ptr.* = VulkanCopyBufferToImageNativeCommand{
+                .buffer = buffer,
+                .image = image,
+                .width = width,
+                .height = height
+            };
+
+            return NativeCommand.init(&vulkan_copy_buffer_to_image_native_command_vtable, raw.ptr, raw.len);
+        }
+
+        pub fn record(device: *const Device, payload: ?[*]const u8, payload_size: usize, command_buffer: *anyopaque) void {
+            const cmd = @as(*const VulkanCopyBufferToImageNativeCommand, @ptrCast(@alignCast(payload)));
+            const vk_cmd = @as(vk.CommandBuffer, @enumFromInt(@intFromPtr(command_buffer)));
+
+            const region = [_]vk.BufferImageCopy {
+                .{
+                    .buffer_offset = 0,
+                    .buffer_row_length = 0,
+                    .buffer_image_height = 0,
+                    .image_offset = .{ .x = 0, .y = 0, .z = 0 },
+                    .image_extent = .{ .width = cmd.width, .height = cmd.height, .depth = 1 },
+                    .image_subresource = .{
+                        .aspect_mask = .{ .color_bit = true },
+                        .mip_level = 0,
+                        .base_array_layer = 0,
+                        .layer_count = 1
+                    }
+                }
+            };
+
+            device.device.cmdCopyBufferToImage(vk_cmd, cmd.buffer, cmd.image, .transfer_dst_optimal, 1, region[0..]);
+
+            _ = payload_size;
+        }
+
+        pub fn destroy(payload: ?[*]u8, payload_size: usize, allocator: *std.mem.Allocator) void {
+            if (payload) |p| {
+                allocator.free(p[0..payload_size]);
+            }
+        }
+    };
+
+    const VulkanImagePipelineBarrierNativeCommand = struct {
+        image: vk.Image,
+        old_layout: vk.ImageLayout,
+        new_layout: vk.ImageLayout,
+        src_access_mask: vk.AccessFlags,
+        dst_access_mask: vk.AccessFlags,
+        src_stage_mask: vk.PipelineStageFlags,
+        dst_stage_mask: vk.PipelineStageFlags,
+
+        pub fn create(
+            allocator: *std.mem.Allocator,
+            image: vk.Image,
+            old_layout: vk.ImageLayout,
+            new_layout: vk.ImageLayout,
+            src_access_mask: vk.AccessFlags,
+            dst_access_mask: vk.AccessFlags,
+            src_stage_mask: vk.PipelineStageFlags,
+            dst_stage_mask: vk.PipelineStageFlags,
+        ) !NativeCommand {
+            const cmd_size = @sizeOf(VulkanImagePipelineBarrierNativeCommand);
+            const raw = try allocator.alloc(u8, cmd_size);
+
+            const ptr = @as(*VulkanImagePipelineBarrierNativeCommand, @ptrCast(@alignCast(raw.ptr)));
+            ptr.* = VulkanImagePipelineBarrierNativeCommand{
+                .image = image,
+                .old_layout = old_layout,
+                .new_layout = new_layout,
+                .src_access_mask = src_access_mask,
+                .dst_access_mask = dst_access_mask,
+                .src_stage_mask = src_stage_mask,
+                .dst_stage_mask = dst_stage_mask,
+            };
+
+            return NativeCommand.init(&vulkan_image_pipeline_barrier_native_command_vtable, raw.ptr, raw.len);
+        }
+
+        pub fn record(device: *const Device, payload: ?[*]const u8, payload_size: usize, command_buffer: *anyopaque) void {
+            const cmd = @as(*const VulkanImagePipelineBarrierNativeCommand, @ptrCast(@alignCast(payload)));
+            const vk_cmd = @as(vk.CommandBuffer, @enumFromInt(@intFromPtr(command_buffer)));
+
+            const barrier = [_]vk.ImageMemoryBarrier {
+                .{
+                    .src_access_mask = cmd.src_access_mask,
+                    .dst_access_mask = cmd.dst_access_mask,
+                    .old_layout = cmd.old_layout,
+                    .new_layout = cmd.new_layout,
+                    .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                    .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                    .image = cmd.image,
+                    .subresource_range = vk.ImageSubresourceRange{
+                        .aspect_mask = .{ .color_bit = true },
+                        .base_mip_level = 0,
+                        .level_count = 1,
+                        .base_array_layer = 0,
+                        .layer_count = 1,
+                    },
+                }
+            };
+
+            device.device.cmdPipelineBarrier(
+                vk_cmd,
+                cmd.src_stage_mask,
+                cmd.dst_stage_mask,
+                .{}, // dependency flags
+                0, null, // memory barriers
+                0, null, // buffer memory barriers
+                1, &barrier, // image memory barriers
+            );
+
+            _ = payload_size;
+        }
+
+        pub fn destroy(payload: ?[*]u8, payload_size: usize, allocator: *std.mem.Allocator) void {
+            if (payload) |p| {
+                allocator.free(p[0..payload_size]);
+            }
+        }
+    };
+
     pub fn nativeBufferCopy(self: *Device, src: vk.Buffer, dst: vk.Buffer, size: usize, src_offset: usize, dst_offset: usize) !NativeCommand {
         return try VulkanCopyBufferNativeCommand.create(
             &self.allocator,
@@ -1199,6 +1476,29 @@ pub const Device = struct {
             size,
             src_offset,
             dst_offset
+        );
+    }
+
+    pub fn nativeBufferToImageCopy(self: *Device, buffer: vk.Buffer, image: vk.Image, width: u32, height: u32) !NativeCommand {
+        return try VulkanCopyBufferToImageNativeCommand.create(
+            &self.allocator,
+            buffer,
+            image,
+            width,
+            height
+        );
+    }
+
+    pub fn nativeCommandImagePipelineBarrier(self: *Device, image: vk.Image, old_layout: vk.ImageLayout, new_layout: vk.ImageLayout, src_access_mask: vk.AccessFlags, dst_access_mask: vk.AccessFlags, src_stage_mask: vk.PipelineStageFlags, dst_stage_mask: vk.PipelineStageFlags) !NativeCommand {
+        return try VulkanImagePipelineBarrierNativeCommand.create(
+            &self.allocator,
+            image,
+            old_layout,
+            new_layout,
+            src_access_mask,
+            dst_access_mask,
+            src_stage_mask,
+            dst_stage_mask
         );
     }
 
@@ -1399,4 +1699,59 @@ fn createBufferInternal(instance: vk.InstanceProxy, physical_device: vk.Physical
     out_memory.* = try device.allocateMemory(&alloc_info, allocator);
 
     try device.bindBufferMemory(out_buffer.*, out_memory.*, 0);
+}
+
+fn transitionImageLayout(device: *Device, command_list: *CommandList, image: vk.Image, old_layout: vk.ImageLayout, new_layout: vk.ImageLayout) !void {
+    var source_stage: vk.PipelineStageFlags = undefined;
+    var destination_stage: vk.PipelineStageFlags = undefined;
+    var image_aspect_mask: vk.ImageAspectFlags = undefined;
+    var source_aspect_mask: vk.AccessFlags = undefined;
+    var destination_aspect_mask: vk.AccessFlags = undefined;
+
+    if (new_layout == .depth_stencil_attachment_optimal) {
+        image_aspect_mask = .{ .depth_bit = true };
+    } else {
+        image_aspect_mask = .{ .color_bit = true };
+    }
+
+    if (old_layout == .undefined and new_layout == .transfer_dst_optimal) {
+        source_aspect_mask = .{};
+        destination_aspect_mask = .{ .transfer_write_bit = true };
+
+        source_stage = .{ .top_of_pipe_bit = true };
+        destination_stage = .{ .transfer_bit = true };
+    } else if (old_layout == .transfer_dst_optimal and new_layout == .shader_read_only_optimal) {
+        source_aspect_mask = .{ .transfer_write_bit = true };
+        destination_aspect_mask = .{ .shader_read_bit = true };
+
+        source_stage = .{ .transfer_bit = true };
+        destination_stage = .{ .fragment_shader_bit = true };
+    } else if (old_layout == .undefined and new_layout == .depth_stencil_attachment_optimal) {
+        source_aspect_mask = .{};
+        destination_aspect_mask = .{
+            .depth_stencil_attachment_read_bit = true,
+            .depth_stencil_attachment_write_bit = true,
+        };
+
+        source_stage = .{ .top_of_pipe_bit = true };
+        destination_stage = .{ .early_fragment_tests_bit = true };
+    }
+
+    const native_command = try device.nativeCommandImagePipelineBarrier(
+        image,
+        old_layout,
+        new_layout,
+        source_aspect_mask,
+        destination_aspect_mask,
+        source_stage,
+        destination_stage
+    );
+
+    try command_list.submitNativeCommand(&native_command);
+}
+
+fn copyBufferToImage(device: *Device, command_list: *CommandList, buffer: vk.Buffer, image: vk.Image, width: u32, height: u32) !void {
+    const native_command = try device.nativeBufferToImageCopy(buffer, image, width, height);
+
+    try command_list.submitNativeCommand(&native_command);
 }

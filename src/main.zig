@@ -20,6 +20,8 @@ const ShaderResourceSet = @import("Renderer/ShaderResource.zig").ShaderResourceS
 const VertexInputLayout = @import("Renderer/Shader.zig").VertexInputLayout;
 const VertexInputAttributeData = @import("Renderer/Shader.zig").VertexInputAttributeData;
 const VertexInputBindingData = @import("Renderer/Shader.zig").VertexInputBindingData;
+const Sampler = @import("Renderer/Texture2D.zig").Sampler;
+const SamplerInfo = @import("Renderer/Texture2D.zig").SamplerInfo;
 
 const vert_spv: []const u32 align(@alignOf(u32)) = @ptrCast(@alignCast(@embedFile("vertex")));
 const frag_spv: []const u32 align(@alignOf(u32)) = @ptrCast(@alignCast(@embedFile("fragment")));
@@ -76,7 +78,8 @@ var tableF: [0x65 + 1]Chip8Func = undefined;
 
 const Vertex = extern struct {
     position: @Vector(4, f32),
-    color: @Vector(4, f32)
+    color: @Vector(4, f32),
+    uv: @Vector(2, f32)
 };
 
 pub fn main() !void {
@@ -90,7 +93,8 @@ pub fn main() !void {
     defer glfw.c.glfwTerminate();
 
     glfw.c.glfwWindowHint(glfw.c.GLFW_CLIENT_API, glfw.c.GLFW_NO_API);
-    const window = glfw.c.glfwCreateWindow(1280, 720, "chirp", null, null);
+    glfw.c.glfwWindowHint(glfw.c.GLFW_RESIZABLE, glfw.c.GLFW_FALSE);
+    const window = glfw.c.glfwCreateWindow(framebuffer_width * 10, framebuffer_height * 10, "chirp", null, null);
     defer glfw.c.glfwDestroyWindow(window);
 
     const instance_info = InstanceInfo{
@@ -133,7 +137,24 @@ pub fn main() !void {
     defer device.destroyRenderPass(&render_pass);
 
     var shader_resource_layout = ShaderResourceLayout{
-        .sets = &.{},
+        .sets = &.{
+            ShaderResourceSet{
+                .resources = &.{
+                    ResourceLayoutItem{
+                        .binding = 0,
+                        .resource_type = .sampled_image,
+                        .resource_array_count = 1,
+                        .stage = .pixel
+                    },
+                    ResourceLayoutItem{
+                        .binding = 1,
+                        .resource_type = .sampler,
+                        .resource_array_count = 1,
+                        .stage = .pixel
+                    }
+                }
+            }
+        },
         .push_constants = &.{
             PushConstantInfo{
                 .size = 4 * @sizeOf(@Vector(4, f32)),
@@ -166,6 +187,12 @@ pub fn main() !void {
             .location = 1,
             .format = .r32g32b32a32_sfloat,
             .offset = @sizeOf(@Vector(4, f32))
+        },
+        VertexInputAttributeData{
+            .binding = 0,
+            .location = 2,
+            .format = .r32g32_sfloat,
+            .offset = @sizeOf(@Vector(4, f32)) * 2
         }
     };
 
@@ -186,10 +213,10 @@ pub fn main() !void {
     var pipeline = try device.createGraphicsPipeline(&pipeline_info);
     defer device.destroyGraphicsPipeline(&pipeline);
 
-    const vertices = [_]@Vector(4, f32) {
-        .{ -1.0, -1.0, 0.0, 1.0 },
-        .{  3.0, -1.0, 0.0, 1.0 },
-        .{ -1.0,  3.0, 0.0, 1.0 }
+    const vertices = [_]Vertex {
+        Vertex{ .position = .{ -1.0, -1.0, 0.0, 1.0 }, .color = .{ 1.0, 1.0, 1.0, 1.0 }, .uv = .{ 0.0, 0.0 } },
+        Vertex{ .position = .{  3.0, -1.0, 0.0, 1.0 }, .color = .{ 1.0, 1.0, 1.0, 1.0 }, .uv = .{ 2.0, 0.0 } },
+        Vertex{ .position = .{ -1.0,  3.0, 0.0, 1.0 }, .color = .{ 1.0, 1.0, 1.0, 1.0 }, .uv = .{ 0.0, 2.0 } }
     };
 
     var vertex_buffer = try device.createBufferWithData(.vertex_buffer, std.mem.sliceAsBytes(&vertices));
@@ -207,6 +234,44 @@ pub fn main() !void {
         .{ 0.0, 0.0, 0.0, 1.0 }
     };
 
+    const allocator = std.heap.c_allocator;
+    const pixel_count = framebuffer_width * framebuffer_height;
+    const texture_data = try allocator.alloc(u32, pixel_count);
+    defer allocator.free(texture_data);
+
+    for (texture_data, 0..) |*pixel, tile_index| {
+        pixel.* = if (tile_index % 3 == 0) 0xFFFFFFFF else 0x000000FF;
+    }
+
+    const texture = try device.createTexture2DFromData(framebuffer_width, framebuffer_height, std.mem.sliceAsBytes(texture_data));
+    defer device.destroyTexture2D(&texture);
+
+    const sampler_info = SamplerInfo{
+        .min_filter = .nearest,
+        .mag_filter = .nearest,
+        .address_mode_u = .clamp_to_edge,
+        .address_mode_v = .clamp_to_edge,
+        .address_mode_w = .clamp_to_edge,
+        .enable_anisotrophy = false,
+        .max_anisotrophy = 1.0,
+        .border_color = .int_opaque_black,
+        .mipmap_mode = .nearest,
+        .compare_enable = false,
+        .min_lod = 0.0,
+        .max_lod = 0.0,
+        .mip_lod_bias = 0.0,
+        .no_max_lod_clamp = false
+    };
+
+    const sampler = try device.createSampler(&sampler_info);
+    defer device.destroySampler(&sampler);
+
+    const resource = try device.createShaderResource(0, &shader_resource_layout);
+    defer device.destroyShaderResource(&resource);
+
+    resource.updateTexture(&texture, 0, 0);
+    resource.updateSampler(&sampler, 1, 0);
+
     while (glfw.c.glfwWindowShouldClose(@ptrCast(window)) != 1) {
         try device.beginFrame();
 
@@ -218,6 +283,7 @@ pub fn main() !void {
         try command_list.setScissor(.{ 0, 0 }, .{ @floatFromInt(swapchain.extent.width), @floatFromInt(swapchain.extent.height) });
         try command_list.bindVertexBuffers(&vertex_buffers);
         try command_list.pushConstants(std.mem.sliceAsBytes(&push_constant_data), .vertex, 0);
+        try command_list.bindShaderResource(0, &resource);
         
         try command_list.draw(3, 0);
 
