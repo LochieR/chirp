@@ -1,8 +1,10 @@
 const std = @import("std");
+const vk = @import("vulkan");
 
 const GraphicsPipeline = @import("GraphicsPipeline.zig").GraphicsPipeline;
 const RenderPass = @import("RenderPass.zig").RenderPass;
 const Buffer = @import("Buffer.zig").Buffer;
+const Texture2D = @import("Texture2D.zig").Texture2D;
 const Device = @import("Device.zig").Device;
 const ShaderResource = @import("ShaderResource.zig").ShaderResource;
 const ShaderStage = @import("Shader.zig").ShaderStage;
@@ -100,6 +102,17 @@ const CommandEntry = struct {
         index_offset: u32
     };
 
+    const ImageMemoryBarrierArgs = struct {
+        image: *Texture2D,
+        old_layout: vk.ImageLayout,
+        new_layout: vk.ImageLayout
+    };
+
+    const CopyBufferToImageArgs = struct {
+        buffer: *const Buffer,
+        image: *Texture2D
+    };
+
     const CommandEntryArgs = union(enum) {
         bind_pipeline_args: BindPipelineArgs,
         push_constant_args: PushConstantsArgs,
@@ -111,6 +124,8 @@ const CommandEntry = struct {
         bind_index_buffer_args: BindIndexBufferArgs,
         draw_args: DrawArgs,
         draw_indexed_args: DrawIndexedArgs,
+        image_memory_barrier_args: ImageMemoryBarrierArgs,
+        copy_buffer_to_image: CopyBufferToImageArgs,
         native_command: NativeCommand,
     };
 
@@ -353,6 +368,33 @@ pub const CommandList = struct {
                     .index_count = index_count,
                     .vertex_offset = vertex_offset,
                     .index_offset = index_offset,
+                }
+            }
+        };
+
+        try self.current_scope.?.commands.append(self.allocator, entry);
+    }
+
+    pub fn imageMemoryBarrier(self: *CommandList, image: *Texture2D, old_layout: vk.ImageLayout, new_layout: vk.ImageLayout) !void {
+        const entry = CommandEntry{
+            .args = .{
+                .image_memory_barrier_args = .{
+                    .image = image,
+                    .old_layout = old_layout,
+                    .new_layout = new_layout
+                }
+            }
+        };
+
+        try self.current_scope.?.commands.append(self.allocator, entry);
+    }
+
+    pub fn copyBufferToImage(self: *CommandList, buffer: *const Buffer, image: *Texture2D) !void {
+        const entry = CommandEntry{
+            .args = .{
+                .copy_buffer_to_image = .{
+                    .buffer = buffer,
+                    .image = image
                 }
             }
         };

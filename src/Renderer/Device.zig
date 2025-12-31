@@ -360,6 +360,198 @@ pub const Device = struct {
                 .draw_indexed_args => |args| {
                     self.device.cmdDrawIndexed(command_buffer, args.index_count, 1, args.index_offset, args.vertex_offset, 0);
                 },
+                .image_memory_barrier_args => |args| {
+                    var barrier = vk.ImageMemoryBarrier{
+                        .old_layout = args.old_layout,
+                        .new_layout = args.new_layout,
+                        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+                        .image = args.image.image,
+                        .subresource_range = .{
+                            .aspect_mask = .{ .color_bit = true },
+                            .base_mip_level = 0,
+                            .level_count = 1,
+                            .base_array_layer = 0,
+                            .layer_count = 1
+                        },
+                        .src_access_mask = undefined,
+                        .dst_access_mask = undefined
+                    };
+
+                    var source_stage: vk.PipelineStageFlags = .{};
+                    var destination_stage: vk.PipelineStageFlags = .{};
+
+                    if (args.old_layout == .undefined and args.new_layout == .transfer_dst_optimal) {
+                        barrier.src_access_mask = .{};
+                        barrier.dst_access_mask = .{ .transfer_write_bit = true };
+
+                        source_stage = .{ .top_of_pipe_bit = true };
+                        destination_stage = .{ .transfer_bit = true };
+                    } else if (args.old_layout == .transfer_dst_optimal and args.new_layout == .shader_read_only_optimal) {
+                        barrier.src_access_mask = .{ .transfer_write_bit = true };
+                        barrier.dst_access_mask = .{ .shader_read_bit = true };
+
+                        source_stage = .{ .transfer_bit = true };
+                        destination_stage = .{ .fragment_shader_bit = true };
+                    } else if (args.old_layout == .shader_read_only_optimal and args.new_layout == .transfer_dst_optimal) {
+                        barrier.src_access_mask = .{ .shader_read_bit = true };
+                        barrier.dst_access_mask = .{ .transfer_write_bit = true };
+
+                        source_stage = .{ .fragment_shader_bit = true };
+                        destination_stage = .{ .transfer_bit = true };
+                    } else if (args.old_layout == .color_attachment_optimal and args.new_layout == .shader_read_only_optimal) {
+                        barrier.src_access_mask = .{ .color_attachment_write_bit = true };
+                        barrier.dst_access_mask = .{ .shader_read_bit = true };
+
+                        source_stage = .{ .color_attachment_output_bit = true };
+                        destination_stage = .{ .fragment_shader_bit = true };
+                    } else if (args.old_layout == .general and args.new_layout == .transfer_dst_optimal) {
+                        barrier.src_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+                        barrier.dst_access_mask = .{ .transfer_write_bit = true };
+
+                        source_stage = .{
+                            .fragment_shader_bit = true,
+                            .compute_shader_bit = true,
+                        };
+                        destination_stage = .{ .transfer_bit = true };
+                    } else if (args.old_layout == .transfer_dst_optimal and args.new_layout == .general) {
+                        barrier.src_access_mask = .{ .transfer_write_bit = true };
+                        barrier.dst_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+
+                        source_stage = .{ .transfer_bit = true };
+                        destination_stage = .{
+                            .fragment_shader_bit = true,
+                            .compute_shader_bit = true,
+                        };
+                    } else if (args.old_layout == .color_attachment_optimal and args.new_layout == .general) {
+                        barrier.src_access_mask = .{ .color_attachment_write_bit = true };
+                        barrier.dst_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+
+                        source_stage = .{ .color_attachment_output_bit = true };
+                        destination_stage = .{
+                            .compute_shader_bit = true,
+                            .fragment_shader_bit = true,
+                        };
+                    } else if (args.old_layout == .general and args.new_layout == .color_attachment_optimal) {
+                        barrier.src_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+                        barrier.dst_access_mask = .{ .color_attachment_write_bit = true };
+
+                        source_stage = .{
+                            .compute_shader_bit = true,
+                            .fragment_shader_bit = true,
+                        };
+                        destination_stage = .{ .color_attachment_output_bit = true };
+                    } else if (args.old_layout == .general and args.new_layout == .shader_read_only_optimal) {
+                        barrier.src_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+                        barrier.dst_access_mask = .{ .shader_read_bit = true };
+
+                        source_stage = .{
+                            .compute_shader_bit = true,
+                            .fragment_shader_bit = true,
+                        };
+                        destination_stage = .{ .fragment_shader_bit = true };
+                    } else if (args.old_layout == .shader_read_only_optimal and args.new_layout == .general) {
+                        barrier.src_access_mask = .{ .shader_read_bit = true };
+                        barrier.dst_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+
+                        source_stage = .{ .fragment_shader_bit = true };
+                        destination_stage = .{
+                            .compute_shader_bit = true,
+                            .fragment_shader_bit = true,
+                        };
+                    } else if (args.old_layout == .undefined and args.new_layout == .general) {
+                        barrier.src_access_mask = .{};
+                        barrier.dst_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+
+                        source_stage = .{ .top_of_pipe_bit = true };
+                        destination_stage = .{
+                            .compute_shader_bit = true,
+                            .fragment_shader_bit = true,
+                        };
+                    } else if (args.old_layout == .general and args.new_layout == .general) {
+                        barrier.src_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+                        barrier.dst_access_mask = .{
+                            .shader_read_bit = true,
+                            .shader_write_bit = true,
+                        };
+
+                        source_stage = .{ .compute_shader_bit = true };
+                        destination_stage = .{ .compute_shader_bit = true };
+                    } else {
+                        unreachable; // unsupported layout transition
+                    }
+
+                    var barriers = [_]vk.ImageMemoryBarrier {
+                        barrier
+                    };
+
+                    self.device.cmdPipelineBarrier(
+                        command_buffer,
+                        source_stage,
+                        destination_stage,
+                        .{},
+                        0,
+                        null,
+                        0,
+                        null,
+                        1,
+                        &barriers
+                    );
+                },
+                .copy_buffer_to_image => |args| {
+                    const region = [_]vk.BufferImageCopy{
+                        .{
+                            .buffer_offset = 0,
+                            .buffer_row_length = 0,
+                            .buffer_image_height = 0,
+                            .image_subresource = .{
+                                .aspect_mask = .{ .color_bit = true },
+                                .mip_level = 0,
+                                .base_array_layer = 0,
+                                .layer_count = 1,
+                            },
+                            .image_offset = .{ .x = 0, .y = 0, .z = 0 },
+                            .image_extent = .{
+                                .width = args.image.width,
+                                .height = args.image.height,
+                                .depth = 1
+                            }
+                        }
+                    };
+
+                    self.device.cmdCopyBufferToImage(
+                        command_buffer,
+                        args.buffer.buffer,
+                        args.image.image,
+                        .transfer_dst_optimal,
+                        1,
+                        &region
+                    );
+                },
                 .native_command => |native| {
                     native.record(self, @ptrFromInt(@intFromEnum(command_buffer)));
                 }
